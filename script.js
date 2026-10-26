@@ -1,204 +1,273 @@
-(() => {
-  const msg = document.getElementById('msg');
+(function () {
+  'use strict';
 
-  // If three.js failed to load you'd get a blank screen, so say so instead
+  const hint = document.getElementById('hint');
+
   if (typeof THREE === 'undefined') {
-    msg.textContent = 'Could not load three.js. Check your internet connection.';
+    hint.innerHTML = '<strong>Couldn\u2019t load the 3D library</strong><span>Check your connection and reload.</span>';
     return;
   }
 
-  /* ---------- Settings ---------- */
-  const CELL = 2;          // size of one grid square (world units)
-  const EYE = 1.7;         // camera height
-  const WALK = 5;          // keyboard speed
-  const RUN = 9;           // shift speed
-  const TOUCH_MAX = 7;     // full-push joystick speed
-  const JOY_RADIUS = 55;   // px the stick can travel
-  const DEADZONE = 0.08;
-  const LOOK_TOUCH = 0.0042;
-  const LOOK_MOUSE = 0.0022;
+  /* ---------- Settings (tweak these) ---------- */
+  const CELL = 2;            // world size of one grid square
+  const FLOOR = 400;         // size of the floor plane (it follows you, so it feels endless)
+  const EYE = 1.7;           // camera height
+  const WALK = 4.5;          // walk speed (units / second)
+  const RUN = 1.8;           // run multiplier (Shift, or full-tilt joystick)
+  const MOUSE_LOOK = 0.0022; // mouse sensitivity
+  const TOUCH_LOOK = 0.0045; // touch-look sensitivity
+  const STICK_R = 56;        // joystick radius in px
+  const DEADZONE = 0.08;     // joystick dead zone (0-1)
+  const LINE_COLOR = '#4a4d52';
 
-  const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-
-  /* ---------- Scene: white world, grid floor, nothing else ---------- */
+  /* ---------- Renderer / scene ---------- */
   const canvas = document.getElementById('scene');
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  } catch (err) {
+    hint.innerHTML = '<strong>WebGL isn\u2019t available</strong><span>Try a different browser or device.</span>';
+    return;
+  }
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xffffff);
-  scene.fog = new THREE.Fog(0xffffff, 10, 100);
+  scene.fog = new THREE.Fog(0xffffff, 8, 70);
 
-  const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 200);
+  const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 120);
   camera.rotation.order = 'YXZ';
+  camera.position.set(0, EYE, 0);
 
-  // Grid texture (one square, repeated)
+  /* ---------- Floor with grid texture ---------- */
   const tc = document.createElement('canvas');
   tc.width = tc.height = 256;
   const g = tc.getContext('2d');
   g.fillStyle = '#ffffff';
   g.fillRect(0, 0, 256, 256);
-  g.fillStyle = '#4a4d52';
-  g.fillRect(0, 0, 3, 256);
-  g.fillRect(0, 0, 256, 3);
+  g.fillStyle = LINE_COLOR;
+  g.fillRect(0, 0, 256, 4);   // top line
+  g.fillRect(0, 0, 4, 256);   // left line
 
-  const PLANE = 400;
   const tex = new THREE.CanvasTexture(tc);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(PLANE / CELL, PLANE / CELL);
+  tex.repeat.set(FLOOR / CELL, FLOOR / CELL);
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
 
   const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(PLANE, PLANE),
+    new THREE.PlaneGeometry(FLOOR, FLOOR),
     new THREE.MeshBasicMaterial({ map: tex })
   );
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
 
+  /* ---------- Resize ---------- */
   function resize() {
     const w = window.innerWidth, h = window.innerHeight;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
+    camera.fov = w / h < 1 ? 82 : 70;   // wider view in portrait
     camera.updateProjectionMatrix();
+    if (!moveT) placeStick(HOME_X, homeY(), false);
   }
-  window.addEventListener('resize', resize);
-  resize();
+
+  /* ---------- Look state ---------- */
+  let yaw = 0, pitch = -0.22;
+  let tYaw = yaw, tPitch = pitch;     // targets (smoothed toward)
+  const PITCH_MAX = 1.45;
+
+  function applyLook(dx, dy, smooth, sens) {
+    tYaw -= dx * sens;
+    tPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, tPitch - dy * sens));
+    if (!smooth) { yaw = tYaw; pitch = tPitch; }
+  }
 
   /* ---------- Input state ---------- */
   const keys = {};
-  let yaw = 0, pitch = 0, yawT = 0, pitchT = 0;
-  const joy = { id: null, x: 0, y: 0, mag: 0, ox: 0, oy: 0 };
-  const look = { id: null, lx: 0, ly: 0 };
+  const joy = { x: 0, y: 0, m: 0 };
+  const vel = { x: 0, z: 0 };
+  let moveT = null;   // joystick touch
+  let lookT = null;   // look touch
+  let mouseDown = false;
 
-  /* Desktop: WASD + mouse look (click to lock the cursor) */
-  window.addEventListener('keydown', e => { keys[e.code] = true; });
-  window.addEventListener('keyup', e => { keys[e.code] = false; });
-  window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+  function dismissHint() { hint.classList.add('hide'); }
 
-  canvas.addEventListener('click', () => {
-    if (!isTouch && document.pointerLockElement !== canvas) canvas.requestPointerLock();
-  });
-  document.addEventListener('pointerlockchange', () => {
-    if (document.pointerLockElement === canvas) fadeMsg();
-  });
-  document.addEventListener('mousemove', e => {
-    if (document.pointerLockElement !== canvas) return;
-    yawT -= e.movementX * LOOK_MOUSE;
-    pitchT -= e.movementY * LOOK_MOUSE;
-    pitchT = Math.max(-1.45, Math.min(1.45, pitchT));
-    yaw = yawT; pitch = pitchT;   // mouse is applied instantly
-  });
-
-  /* Mobile: left thumb = joystick, right thumb = look */
-  const touchLayer = document.getElementById('touch');
-  const joyEl = document.getElementById('joy');
+  /* ---------- Joystick UI ---------- */
   const stickEl = document.getElementById('stick');
+  const thumbEl = stickEl.querySelector('.thumb');
+  const HOME_X = 90;
+  const homeY = () => window.innerHeight - 120;
 
-  touchLayer.addEventListener('pointerdown', e => {
+  function placeStick(x, y, active) {
+    stickEl.classList.toggle('active', active);
+    stickEl.style.transform = 'translate3d(' + x + 'px,' + y + 'px,0)';
+  }
+
+  if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) {
+    stickEl.classList.add('show');
+  }
+
+  function updateJoystick(e) {
+    let dx = e.clientX - moveT.ox;
+    let dy = e.clientY - moveT.oy;
+    const d = Math.hypot(dx, dy);
+
+    // If the finger goes past the edge, the base follows it (no need to re-center)
+    if (d > STICK_R) {
+      const k = (d - STICK_R) / d;
+      moveT.ox += dx * k;
+      moveT.oy += dy * k;
+      dx = e.clientX - moveT.ox;
+      dy = e.clientY - moveT.oy;
+      placeStick(moveT.ox, moveT.oy, true);
+    }
+
+    thumbEl.style.transform = 'translate3d(' + dx + 'px,' + dy + 'px,0)';
+
+    const nx = dx / STICK_R, ny = dy / STICK_R;
+    const len = Math.hypot(nx, ny);
+    if (len < DEADZONE) {
+      joy.x = joy.y = joy.m = 0;
+    } else {
+      const s = (Math.min(1, len) - DEADZONE) / (1 - DEADZONE);
+      const shaped = Math.pow(s, 1.3);     // gentle curve: fine control at low tilt
+      joy.x = (nx / len) * shaped;
+      joy.y = -(ny / len) * shaped;        // up on screen = forward
+      joy.m = shaped;
+    }
+  }
+
+  /* ---------- Pointer input (mouse + touch) ---------- */
+  canvas.addEventListener('pointerdown', function (e) {
+    dismissHint();
+
+    if (e.pointerType === 'mouse') {
+      if (e.button !== 0) return;
+      mouseDown = true;
+      try {
+        const p = canvas.requestPointerLock && canvas.requestPointerLock();
+        if (p && p.catch) p.catch(function () {});
+      } catch (err) {}
+      return;
+    }
+
+    // Touch
+    stickEl.classList.add('show');
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+
+    if (!moveT && e.clientX < window.innerWidth * 0.5) {
+      moveT = { id: e.pointerId, ox: e.clientX, oy: e.clientY };
+      placeStick(e.clientX, e.clientY, true);
+      thumbEl.style.transform = 'translate3d(0,0,0)';
+    } else if (!lookT) {
+      lookT = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    }
+  });
+
+  canvas.addEventListener('pointermove', function (e) {
     if (e.pointerType === 'mouse') return;
-    touchLayer.setPointerCapture(e.pointerId);
-    fadeMsg();
-    if (e.clientX < window.innerWidth * 0.5 && joy.id === null) {
-      joy.id = e.pointerId;
-      joy.ox = e.clientX; joy.oy = e.clientY;
-      joyEl.style.left = joy.ox + 'px';
-      joyEl.style.top = joy.oy + 'px';
-      stickEl.style.transform = 'translate(0px, 0px)';
-      joyEl.classList.add('active');
-    } else if (look.id === null) {
-      look.id = e.pointerId;
-      look.lx = e.clientX; look.ly = e.clientY;
+    if (moveT && e.pointerId === moveT.id) {
+      updateJoystick(e);
+    } else if (lookT && e.pointerId === lookT.id) {
+      applyLook(e.clientX - lookT.x, e.clientY - lookT.y, true, TOUCH_LOOK);
+      lookT.x = e.clientX;
+      lookT.y = e.clientY;
     }
   });
 
-  touchLayer.addEventListener('pointermove', e => {
-    if (e.pointerId === joy.id) {
-      let dx = e.clientX - joy.ox, dy = e.clientY - joy.oy;
-      const len = Math.hypot(dx, dy) || 1;
-      const r = Math.min(len, JOY_RADIUS);
-      const nx = dx / len, ny = dy / len;
-      stickEl.style.transform = `translate(${nx * r}px, ${ny * r}px)`;
-      // deadzone, then a gentle curve so small pushes give fine control
-      let m = Math.max(0, (r / JOY_RADIUS - DEADZONE) / (1 - DEADZONE));
-      m = Math.pow(m, 1.35);
-      joy.mag = m; joy.x = nx * m; joy.y = ny * m;
-    } else if (e.pointerId === look.id) {
-      yawT -= (e.clientX - look.lx) * LOOK_TOUCH;
-      pitchT -= (e.clientY - look.ly) * LOOK_TOUCH;
-      pitchT = Math.max(-1.45, Math.min(1.45, pitchT));
-      look.lx = e.clientX; look.ly = e.clientY;
+  function endPointer(e) {
+    if (moveT && e.pointerId === moveT.id) {
+      moveT = null;
+      joy.x = joy.y = joy.m = 0;
+      thumbEl.style.transform = 'translate3d(0,0,0)';
+      placeStick(HOME_X, homeY(), false);   // glides back home
+    }
+    if (lookT && e.pointerId === lookT.id) lookT = null;
+    if (e.pointerType === 'mouse') mouseDown = false;
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+
+  // Mouse look (pointer-locked, or drag as a fallback)
+  document.addEventListener('mousemove', function (e) {
+    if (document.pointerLockElement === canvas || mouseDown) {
+      applyLook(e.movementX || 0, e.movementY || 0, false, MOUSE_LOOK);
     }
   });
+  window.addEventListener('mouseup', function () { mouseDown = false; });
 
-  function endTouch(e) {
-    if (e.pointerId === joy.id) {
-      joy.id = null; joy.x = joy.y = joy.mag = 0;
-      joyEl.classList.remove('active');
-    } else if (e.pointerId === look.id) {
-      look.id = null;
-    }
-  }
-  touchLayer.addEventListener('pointerup', endTouch);
-  touchLayer.addEventListener('pointercancel', endTouch);
-  touchLayer.addEventListener('contextmenu', e => e.preventDefault());
+  /* ---------- Keyboard ---------- */
+  window.addEventListener('keydown', function (e) {
+    keys[e.code] = true;
+    dismissHint();
+    if (e.code.indexOf('Arrow') === 0 || e.code === 'Space') e.preventDefault();
+  });
+  window.addEventListener('keyup', function (e) { keys[e.code] = false; });
+  window.addEventListener('blur', function () {
+    for (const k in keys) keys[k] = false;
+    mouseDown = false;
+  });
 
-  /* ---------- Hint text ---------- */
-  msg.textContent = isTouch
-    ? 'Left thumb: move  ·  Right thumb: look'
-    : 'Click to look around  ·  WASD to move  ·  Shift to run';
-  let msgTimer = setTimeout(fadeMsg, 6000);
-  function fadeMsg() {
-    clearTimeout(msgTimer);
-    msg.classList.add('hide');
-  }
+  /* ---------- Stop the browser from scrolling / zooming ---------- */
+  document.addEventListener('touchmove', function (e) { e.preventDefault(); }, { passive: false });
+  document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+  canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
-  /* ---------- Game loop ---------- */
-  const pos = { x: 0, z: 0 };
-  let vx = 0, vz = 0;          // local velocity (x = strafe, z = forward)
-  let last = performance.now();
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', function () { setTimeout(resize, 150); });
 
-  function frame(now) {
-    const dt = Math.min((now - last) / 1000, 0.05);
-    last = now;
+  /* ---------- Main loop ---------- */
+  const clock = new THREE.Clock();
 
-    // Smooth the look so touch drags feel silky
-    if (isTouch) {
-      const k = 1 - Math.exp(-dt * 28);
-      yaw += (yawT - yaw) * k;
-      pitch += (pitchT - pitch) * k;
-    }
+  function frame() {
+    requestAnimationFrame(frame);
+    const dt = Math.min(clock.getDelta(), 0.05);
 
-    // Wanted movement
-    let ix = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
-    let iz = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
-    let speed = keys.ShiftLeft || keys.ShiftRight ? RUN : WALK;
-    const kl = Math.hypot(ix, iz);
-    if (kl > 1) { ix /= kl; iz /= kl; }
+    // Arrow keys also look around
+    const turn = 1.8 * dt;
+    if (keys.ArrowLeft)  tYaw += turn;
+    if (keys.ArrowRight) tYaw -= turn;
+    if (keys.ArrowUp)    tPitch = Math.min(PITCH_MAX, tPitch + turn);
+    if (keys.ArrowDown)  tPitch = Math.max(-PITCH_MAX, tPitch - turn);
 
-    if (joy.id !== null) {       // joystick overrides keys while touching
-      ix = joy.x; iz = -joy.y;
-      speed = TOUCH_MAX;
-    }
-
-    // Accelerate / brake smoothly instead of snapping
-    const k = 1 - Math.exp(-dt * (ix || iz ? 9 : 12));
-    vx += (ix * speed - vx) * k;
-    vz += (iz * speed - vz) * k;
-
-    // Rotate local movement into the world
-    const sin = Math.sin(yaw), cos = Math.cos(yaw);
-    pos.x += (cos * vx - sin * vz) * dt;
-    pos.z += (-sin * vx - cos * vz) * dt;
-
-    // Floor follows the player in whole squares so it looks endless
-    floor.position.x = Math.round(pos.x / CELL) * CELL;
-    floor.position.z = Math.round(pos.z / CELL) * CELL;
-
-    camera.position.set(pos.x, EYE, pos.z);
+    // Smooth the look toward its target (frame-rate independent)
+    const lk = 1 - Math.exp(-dt * 28);
+    yaw += (tYaw - yaw) * lk;
+    pitch += (tPitch - pitch) * lk;
     camera.rotation.set(pitch, yaw, 0);
 
+    // Movement input: keyboard + joystick
+    const kx = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+    const ky = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0);
+    let ix = kx + joy.x, iy = ky + joy.y;
+    const mag = Math.hypot(ix, iy);
+    if (mag > 1) { ix /= mag; iy /= mag; }
+
+    let speed = WALK;
+    if (keys.ShiftLeft || keys.ShiftRight) {
+      speed *= RUN;
+    } else if (joy.m > 0.85) {
+      speed *= 1 + (RUN - 1) * Math.min(1, (joy.m - 0.85) / 0.15);  // full tilt = run
+    }
+
+    const s = Math.sin(yaw), c = Math.cos(yaw);
+    const tx = (c * ix - s * iy) * speed;
+    const tz = (-s * ix - c * iy) * speed;
+
+    // Smooth acceleration / deceleration
+    const vk = 1 - Math.exp(-dt * 10);
+    vel.x += (tx - vel.x) * vk;
+    vel.z += (tz - vel.z) * vk;
+    camera.position.x += vel.x * dt;
+    camera.position.z += vel.z * dt;
+
+    // Floor follows the camera, snapped to the grid so lines never slide
+    floor.position.x = Math.round(camera.position.x / CELL) * CELL;
+    floor.position.z = Math.round(camera.position.z / CELL) * CELL;
+
     renderer.render(scene, camera);
-    requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+
+  resize();
+  frame();
 })();
