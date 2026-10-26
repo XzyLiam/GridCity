@@ -2,12 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Grid</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Grid 3D</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="grid" class="grid"></div>
+  <canvas id="scene"></canvas>
+
+  <!-- Touch layer: left half = joystick, right half = look -->
+  <div id="touch">
+    <div id="joy"><div id="stick"></div></div>
+  </div>
+
+  <div id="msg"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
