@@ -49,6 +49,15 @@
       backdrop-filter: blur(8px);
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
+      transform: translateY(120%);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform 0.25s ease, opacity 0.25s ease;
+    }
+    #menu.open {
+      transform: translateY(0);
+      opacity: 1;
+      pointer-events: auto;
     }
     .menu-item {
       padding: 12px 14px;
@@ -73,7 +82,30 @@
       background: rgba(0,0,0,0.1);
     }
 
-    /* Better mobile layout */
+    #menu-toggle {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: rgba(240, 240, 240, 0.94);
+      border: 2px solid rgba(0,0,0,0.12);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+      z-index: 25;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      color: #555;
+      transition: background 0.15s, transform 0.15s;
+    }
+    #menu-toggle:active {
+      transform: scale(0.94);
+      background: rgba(230, 230, 230, 0.95);
+    }
+
     @media (max-width: 600px) {
       #menu {
         bottom: 12px;
@@ -99,6 +131,12 @@
         left: 32px;
         top: 32px;
       }
+      #menu-toggle {
+        bottom: 16px;
+        right: 16px;
+        width: 44px;
+        height: 44px;
+      }
     }
   </style>
 </head>
@@ -112,30 +150,36 @@
     <button class="menu-item" data-section="decoration">Decoration</button>
     <button class="menu-item" data-section="electronic">Electronic</button>
   </div>
+  <button id="menu-toggle">☰</button>
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
   <script>
-    // Menu interaction (prevent touch from affecting look)
     const menu = document.getElementById('menu');
+    const menuToggle = document.getElementById('menu-toggle');
     const menuItems = document.querySelectorAll('.menu-item');
+
+    menuToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menu.classList.toggle('open');
+    });
+    menuToggle.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+
     menuItems.forEach(item => {
       item.addEventListener('click', (e) => {
         e.stopPropagation();
         menuItems.forEach(i => i.classList.remove('active'));
         item.classList.add('active');
+        if (window.innerWidth <= 600) menu.classList.remove('open');
       });
       item.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
     });
     menu.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
     menu.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
 
-    // Detect mobile
     const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
     document.body.classList.add(isMobile ? 'mobile' : 'desktop');
 
-    // Three.js setup
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xffffff);
-    // Fog makes the grid fade smoothly into the white background at distance
     scene.fog = new THREE.Fog(0xffffff, 25, 70);
 
     const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -147,14 +191,12 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     document.body.appendChild(renderer.domElement);
 
-    // Grid floor matching the image style: black lines on white
     const gridSize = 200;
     const divisions = 100;
     const grid = new THREE.GridHelper(gridSize, divisions, 0x888888, 0xaaaaaa);
     grid.material.fog = true;
     scene.add(grid);
 
-    // Optional subtle plane for better "floor" feel
     const planeGeo = new THREE.PlaneGeometry(gridSize, gridSize);
     const planeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
     const plane = new THREE.Mesh(planeGeo, planeMat);
@@ -162,16 +204,14 @@
     plane.position.y = -0.01;
     scene.add(plane);
 
-    // Movement state
     const keys = { w: false, a: false, s: false, d: false };
-    let moveX = 0; // -1 to 1
+    let moveX = 0;
     let moveZ = 0;
     let yaw = 0;
-    let pitch = -0.3; // slight downward look
-    const speed = 8; // units per second
+    let pitch = -0.3;
+    const speed = 8;
     const lookSensitivity = 0.002;
 
-    // Pointer lock for desktop look
     let pointerLocked = false;
     document.addEventListener('click', () => {
       if (!isMobile && !pointerLocked) {
@@ -182,7 +222,6 @@
       pointerLocked = document.pointerLockElement === renderer.domElement;
     });
 
-    // Keyboard
     window.addEventListener('keydown', (e) => {
       const k = e.key.toLowerCase();
       if (k === 'w' || k === 'arrowup') keys.w = true;
@@ -198,7 +237,6 @@
       if (k === 'd' || k === 'arrowright') keys.d = false;
     });
 
-    // Mouse look
     document.addEventListener('mousemove', (e) => {
       if (!isMobile && pointerLocked) {
         yaw -= e.movementX * lookSensitivity;
@@ -207,7 +245,6 @@
       }
     });
 
-    // Virtual joystick (clean + smooth)
     const joystick = document.getElementById('joystick');
     const knob = document.getElementById('knob');
     let joystickActive = false;
@@ -215,7 +252,6 @@
     const maxRadius = 46;
     const deadZone = 0.08;
 
-    // Smoothed movement
     let targetMoveX = 0;
     let targetMoveZ = 0;
     const smoothFactor = 0.35;
@@ -289,16 +325,15 @@
       }
     });
 
-    // Touch look (on the rest of the screen)
     let lookTouchId = null;
     let lastLookX = 0;
     let lastLookY = 0;
 
     window.addEventListener('touchstart', (e) => {
       if (joystickActive && e.target.closest('#joystick')) return;
+      if (e.target.closest('#menu') || e.target.closest('#menu-toggle')) return;
       if (lookTouchId === null && e.changedTouches.length > 0) {
         const touch = e.changedTouches[0];
-        // Only start look if not on joystick
         const rect = joystick.getBoundingClientRect();
         if (touch.clientX < rect.left || touch.clientX > rect.right ||
             touch.clientY < rect.top || touch.clientY > rect.bottom) {
@@ -334,24 +369,20 @@
       }
     });
 
-    // Resize
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // Animation loop
     const clock = new THREE.Clock();
     function animate() {
       requestAnimationFrame(animate);
       const delta = clock.getDelta();
 
-      // Smooth the joystick input
       moveX += (targetMoveX - moveX) * smoothFactor;
       moveZ += (targetMoveZ - moveZ) * smoothFactor;
 
-      // Combine input
       let inputX = moveX;
       let inputZ = moveZ;
       if (keys.w) inputZ += 1;
@@ -359,26 +390,22 @@
       if (keys.a) inputX -= 1;
       if (keys.d) inputX += 1;
 
-      // Normalize if both
       const len = Math.sqrt(inputX * inputX + inputZ * inputZ);
       if (len > 1) {
         inputX /= len;
         inputZ /= len;
       }
 
-      // Move relative to yaw
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
       camera.position.addScaledVector(forward, inputZ * speed * delta);
       camera.position.addScaledVector(right, inputX * speed * delta);
-      camera.position.y = 5; // fixed height
+      camera.position.y = 5;
 
-      // Apply rotation
       camera.rotation.order = 'YXZ';
       camera.rotation.y = yaw;
       camera.rotation.x = pitch;
 
-      // Optional: keep grid centered under camera for infinite feel
       const step = gridSize / divisions;
       grid.position.x = Math.round(camera.position.x / step) * step;
       grid.position.z = Math.round(camera.position.z / step) * step;
