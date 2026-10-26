@@ -248,4 +248,179 @@
     const joystick = document.getElementById('joystick');
     const knob = document.getElementById('knob');
     let joystickActive = false;
-    let
+    let joystickId = null;
+    const maxRadius = 46;
+    const deadZone = 0.08;
+
+    let targetMoveX = 0;
+    let targetMoveZ = 0;
+    const smoothFactor = 0.35;
+
+    function updateJoystick(clientX, clientY) {
+      const rect = joystick.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      let dx = clientX - centerX;
+      let dy = clientY - centerY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist > maxRadius) {
+        dx = (dx / dist) * maxRadius;
+        dy = (dy / dist) * maxRadius;
+      }
+
+      const knobSize = knob.offsetWidth;
+      const baseLeft = (joystick.clientWidth - knobSize) / 2;
+      const baseTop = (joystick.clientHeight - knobSize) / 2;
+      knob.style.left = (baseLeft + dx) + 'px';
+      knob.style.top = (baseTop + dy) + 'px';
+
+      let nx = dx / maxRadius;
+      let nz = -dy / maxRadius;
+      const mag = Math.sqrt(nx * nx + nz * nz);
+      if (mag < deadZone) {
+        nx = 0;
+        nz = 0;
+      } else {
+        const remapped = (mag - deadZone) / (1 - deadZone);
+        nx = (nx / mag) * Math.min(remapped, 1);
+        nz = (nz / mag) * Math.min(remapped, 1);
+      }
+
+      targetMoveX = nx;
+      targetMoveZ = nz;
+    }
+
+    function resetJoystick() {
+      targetMoveX = 0;
+      targetMoveZ = 0;
+      joystickActive = false;
+      joystickId = null;
+      const knobSize = knob.offsetWidth;
+      const baseLeft = (joystick.clientWidth - knobSize) / 2;
+      const baseTop = (joystick.clientHeight - knobSize) / 2;
+      knob.style.left = baseLeft + 'px';
+      knob.style.top = baseTop + 'px';
+    }
+
+    joystick.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const touch = e.changedTouches[0];
+      joystickActive = true;
+      joystickId = touch.identifier;
+      updateJoystick(touch.clientX, touch.clientY);
+    }, { passive: false });
+
+    window.addEventListener('touchmove', (e) => {
+      if (!joystickActive) return;
+      for (let touch of e.changedTouches) {
+        if (touch.identifier === joystickId) {
+          e.preventDefault();
+          updateJoystick(touch.clientX, touch.clientY);
+          break;
+        }
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchend', (e) => {
+      for (let touch of e.changedTouches) {
+        if (touch.identifier === joystickId) {
+          resetJoystick();
+          break;
+        }
+      }
+    });
+
+    let lookTouchId = null;
+    let lastLookX = 0;
+    let lastLookY = 0;
+
+    window.addEventListener('touchstart', (e) => {
+      if (joystickActive && e.target.closest('#joystick')) return;
+      if (e.target.closest('#menu') || e.target.closest('#menu-toggle')) return;
+      if (lookTouchId === null && e.changedTouches.length > 0) {
+        const touch = e.changedTouches[0];
+        const rect = joystick.getBoundingClientRect();
+        if (touch.clientX < rect.left || touch.clientX > rect.right ||
+            touch.clientY < rect.top || touch.clientY > rect.bottom) {
+          lookTouchId = touch.identifier;
+          lastLookX = touch.clientX;
+          lastLookY = touch.clientY;
+        }
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchmove', (e) => {
+      if (lookTouchId === null) return;
+      for (let touch of e.changedTouches) {
+        if (touch.identifier === lookTouchId) {
+          const dx = touch.clientX - lastLookX;
+          const dy = touch.clientY - lastLookY;
+          yaw -= dx * lookSensitivity * 1.5;
+          pitch -= dy * lookSensitivity * 1.5;
+          pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, pitch));
+          lastLookX = touch.clientX;
+          lastLookY = touch.clientY;
+          break;
+        }
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchend', (e) => {
+      for (let touch of e.changedTouches) {
+        if (touch.identifier === lookTouchId) {
+          lookTouchId = null;
+          break;
+        }
+      }
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+
+      moveX += (targetMoveX - moveX) * smoothFactor;
+      moveZ += (targetMoveZ - moveZ) * smoothFactor;
+
+      let inputX = moveX;
+      let inputZ = moveZ;
+      if (keys.w) inputZ += 1;
+      if (keys.s) inputZ -= 1;
+      if (keys.a) inputX -= 1;
+      if (keys.d) inputX += 1;
+
+      const len = Math.sqrt(inputX * inputX + inputZ * inputZ);
+      if (len > 1) {
+        inputX /= len;
+        inputZ /= len;
+      }
+
+      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      camera.position.addScaledVector(forward, inputZ * speed * delta);
+      camera.position.addScaledVector(right, inputX * speed * delta);
+      camera.position.y = 5;
+
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = yaw;
+      camera.rotation.x = pitch;
+
+      const step = gridSize / divisions;
+      grid.position.x = Math.round(camera.position.x / step) * step;
+      grid.position.z = Math.round(camera.position.z / step) * step;
+      plane.position.x = grid.position.x;
+      plane.position.z = grid.position.z;
+
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
