@@ -3,18 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <title>Grid 3D</title>
+  <title>Grid</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <canvas id="scene"></canvas>
 
-  <!-- Touch layer: left half = joystick, right half = look -->
-  <div id="touch">
-    <div id="joy"><div id="stick"></div></div>
+  <!-- Mobile joystick -->
+  <div id="stick" class="stick">
+    <div class="thumb"></div>
   </div>
 
-  <div id="msg"></div>
+  <!-- Start hint -->
+  <div id="hint" class="hint">
+    <div class="hint-desktop">
+      <strong>Click to look around</strong>
+      <span>W A S D to move &middot; Shift to run &middot; Esc to release mouse</span>
+    </div>
+    <div class="hint-touch">
+      <strong>Left thumb to move</strong>
+      <span>Right thumb to look around</span>
+    </div>
+  </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="script.js"></script>
