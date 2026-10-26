@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>3D Grid Floor Explorer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #ffffff; font-family: system-ui, sans-serif; touch-action: none; }
+    canvas { display: block; }
+    #joystick {
+      position: fixed;
+      bottom: 110px;
+      left: 40px;
+      width: 130px;
+      height: 130px;
+      background: rgba(0,0,0,0.08);
+      border: 2px solid rgba(0,0,0,0.18);
+      border-radius: 50%;
+      display: none;
+      touch-action: none;
+      z-index: 20;
+    }
+    #knob {
+      position: absolute;
+      width: 54px;
+      height: 54px;
+      background: rgba(0,0,0,0.35);
+      border-radius: 50%;
+      left: 38px;
+      top: 38px;
+      pointer-events: none;
+    }
+    .mobile #joystick { display: block; }
+
+    #menu {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      right: 16px;
+      max-width: 420px;
+      background: rgba(240, 240, 240, 0.94);
+      border-radius: 12px;
+      padding: 6px;
+      display: flex;
+      gap: 4px;
+      z-index: 15;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+      backdrop-filter: blur(8px);
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .menu-item {
+      padding: 12px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #555;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+      text-align: center;
+    }
+    .menu-item:hover,
+    .menu-item.active {
+      background: rgba(0,0,0,0.06);
+      color: #333;
+    }
+    .menu-item.active {
+      background: rgba(0,0,0,0.1);
+    }
+
+    /* Better mobile layout */
+    @media (max-width: 600px) {
+      #menu {
+        bottom: 12px;
+        left: 12px;
+        right: 12px;
+        max-width: none;
+        padding: 4px;
+        gap: 2px;
+      }
+      .menu-item {
+        padding: 10px 8px;
+        font-size: 12px;
+      }
+      #joystick {
+        bottom: 90px;
+        left: 16px;
+        width: 110px;
+        height: 110px;
+      }
+      #knob {
+        width: 46px;
+        height: 46px;
+        left: 32px;
+        top: 32px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="joystick">
+    <div id="knob"></div>
+  </div>
+  <div id="menu">
+    <button class="menu-item active" data-section="buildings">Buildings</button>
+    <button class="menu-item" data-section="roads">Roads</button>
+    <button class="menu-item" data-section="decoration">Decoration</button>
+    <button class="menu-item" data-section="electronic">Electronic</button>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script>
+    // Menu interaction (prevent touch from affecting look)
+    const menu = document.getElementById('menu');
+    const menuItems = document.querySelectorAll('.menu-item');
+    menuItems.forEach(item => {
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        menuItems.forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+      });
+      item.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+    });
+    menu.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+    menu.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
+
+    // Detect mobile
+    const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    document.body.classList.add(isMobile ? 'mobile' : 'desktop');
+
+    // Three.js setup
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+    // Fog makes the grid fade smoothly into the white background at distance
+    scene.fog = new THREE.Fog(0xffffff, 25, 70);
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 5, 10);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+
+    // Grid floor matching the image style: black lines on white
+    const gridSize = 200;
+    const divisions = 100;
+    const grid = new THREE.GridHelper(gridSize, divisions, 0x888888, 0xaaaaaa);
+    grid.material.fog = true;
+    scene.add(grid);
+
+    // Optional subtle plane for better "floor" feel
+    const planeGeo = new THREE.PlaneGeometry(gridSize, gridSize);
+    const planeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+    const plane = new THREE.Mesh(planeGeo, planeMat);
+    plane.rotation.x = -Math.PI / 2;
+    plane.position.y = -0.01;
+    scene.add(plane);
+
+    // Movement state
+    const keys = { w: false, a: false, s: false, d: false };
+    let moveX = 0; // -1 to 1
+    let moveZ = 0;
+    let yaw = 0;
+    let pitch = -0.3; // slight downward look
+    const speed = 8; // units per second
+    const lookSensitivity = 0.002;
+
+    // Pointer lock for desktop look
+    let pointerLocked = false;
+    document.addEventListener('click', () => {
+      if (!isMobile && !pointerLocked) {
+        renderer.domElement.requestPointerLock();
+      }
+    });
+    document.addEventListener('pointerlockchange', () => {
+      pointerLocked = document.pointerLockElement === renderer.domElement;
+    });
+
+    // Keyboard
+    window.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      if (k === 'w' || k === 'arrowup') keys.w = true;
+      if (k === 's' || k === 'arrowdown') keys.s = true;
+      if (k === 'a' || k === 'arrowleft') keys.a = true;
+      if (k === 'd' || k === 'arrowright') keys.d = true;
+    });
+    window.addEventListener('keyup', (e) => {
+      const k = e.key.toLowerCase();
+      if (k === 'w' || k === 'arrowup') keys.w = false;
+      if (k === 's' || k === 'arrowdown') keys.s = false;
+      if (k === 'a' || k === 'arrowleft') keys.a = false;
+      if (k === 'd' || k === 'arrowright') keys.d = false;
+    });
+
+    // Mouse look
+    document.addEventListener('mousemove', (e) => {
+      if (!isMobile && pointerLocked) {
+        yaw -= e.movementX * lookSensitivity;
+        pitch -= e.movementY * lookSensitivity;
+        pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, pitch));
+      }
+    });
+
+    // Virtual joystick (clean + smooth)
+    const joystick = document.getElementById('joystick');
+    const knob = document.getElementById('knob');
+    let joystickActive = false;
+    let joystickId = null;
+    const maxRadius = 46;
+    const deadZone = 0.08;
+
+    // Smoothed movement
+    let targetMoveX = 0;
+    let targetMoveZ = 0;
+    const smoothFactor = 0.35;
+
+    function updateJoystick(clientX, clientY) {
+      const rect = joystick.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      let dx = clientX - centerX;
+      let dy = clientY - centerY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist > maxRadius) {
+        dx = (dx / dist) * maxRadius;
+        dy = (dy / dist) * maxRadius;
+      }
+
+      knob.style.left = (38 + dx) + 'px';
+      knob.style.top = (38 + dy) + 'px';
+
+      let nx = dx / maxRadius;
+      let nz = -dy / maxRadius;
+      const mag = Math.sqrt(nx * nx + nz * nz);
+      if (mag < deadZone) {
+        nx = 0;
+        nz = 0;
+      } else {
+        const remapped = (mag - deadZone) / (1 - deadZone);
+        nx = (nx / mag) * Math.min(remapped, 1);
+        nz = (nz / mag) * Math.min(remapped, 1);
+      }
+
+      targetMoveX = nx;
+      targetMoveZ = nz;
+    }
+
+    function resetJoystick() {
+      targetMoveX = 0;
+      targetMoveZ = 0;
+      joystickActive = false;
+      joystickId = null;
+      knob.style.left = '38px';
+      knob.style.top = '38px';
+    }
+
+    joystick.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const touch = e.changedTouches[0];
+      joystickActive = true;
+      joystickId = touch.identifier;
+      updateJoystick(touch.clientX, touch.clientY);
+    }, { passive: false });
+
+    window.addEventListener('touchmove', (e) => {
+      if (!joystickActive) return;
+      for (let touch of e.changedTouches) {
+        if (touch.identifier === joystickId) {
+          e.preventDefault();
+          updateJoystick(touch.clientX, touch.clientY);
+          break;
+        }
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchend', (e) => {
+      for (let touch of e.changedTouches) {
+        if (touch.identifier === joystickId) {
+          resetJoystick();
+          break;
+        }
+      }
+    });
+
+    // Touch look (on the rest of the screen)
+    let lookTouchId = null;
+    let lastLookX = 0;
+    let lastLookY = 0;
+
+    window.addEventListener('touchstart', (e) => {
+      if (joystickActive && e.target.closest('#joystick')) return;
+      if (lookTouchId === null && e.changedTouches.length > 0) {
+        const touch = e.changedTouches[0];
+        // Only start look if not on joystick
+        const rect = joystick.getBoundingClientRect();
+        if (touch.clientX < rect.left || touch.clientX > rect.right ||
+            touch.clientY < rect.top || touch.clientY > rect.bottom) {
+          lookTouchId = touch.identifier;
+          lastLookX = touch.clientX;
+          lastLookY = touch.clientY;
+        }
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchmove', (e) => {
+      if (lookTouchId === null) return;
+      for (let touch of e.changedTouches) {
+        if (touch.identifier === lookTouchId) {
+          const dx = touch.clientX - lastLookX;
+          const dy = touch.clientY - lastLookY;
+          yaw -= dx * lookSensitivity * 1.5;
+          pitch -= dy * lookSensitivity * 1.5;
+          pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, pitch));
+          lastLookX = touch.clientX;
+          lastLookY = touch.clientY;
+          break;
+        }
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchend', (e) => {
+      for (let touch of e.changedTouches) {
+        if (touch.identifier === lookTouchId) {
+          lookTouchId = null;
+          break;
+        }
+      }
+    });
+
+    // Resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Animation loop
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+
+      // Smooth the joystick input
+      moveX += (targetMoveX - moveX) * smoothFactor;
+      moveZ += (targetMoveZ - moveZ) * smoothFactor;
+
+      // Combine input
+      let inputX = moveX;
+      let inputZ = moveZ;
+      if (keys.w) inputZ += 1;
+      if (keys.s) inputZ -= 1;
+      if (keys.a) inputX -= 1;
+      if (keys.d) inputX += 1;
+
+      // Normalize if both
+      const len = Math.sqrt(inputX * inputX + inputZ * inputZ);
+      if (len > 1) {
+        inputX /= len;
+        inputZ /= len;
+      }
+
+      // Move relative to yaw
+      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      camera.position.addScaledVector(forward, inputZ * speed * delta);
+      camera.position.addScaledVector(right, inputX * speed * delta);
+      camera.position.y = 5; // fixed height
+
+      // Apply rotation
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = yaw;
+      camera.rotation.x = pitch;
+
+      // Optional: keep grid centered under camera for infinite feel
+      const step = gridSize / divisions;
+      grid.position.x = Math.round(camera.position.x / step) * step;
+      grid.position.z = Math.round(camera.position.z / step) * step;
+      plane.position.x = grid.position.x;
+      plane.position.z = grid.position.z;
+
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
